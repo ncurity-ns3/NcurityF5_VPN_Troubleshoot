@@ -126,7 +126,7 @@ class HomePage(QWidget):
         self.health_badge.setObjectName("healthPending")
         self.health_badge.style().unpolish(self.health_badge)
         self.health_badge.style().polish(self.health_badge)
-        self.health_summary.setText("설치 상태를 확인하고 있습니다… (창이 뜨지 않도록 조용히 실행합니다)")
+        self.health_summary.setText("설치 상태를 확인하고 있습니다…")
         self.health_reasons.setText("")
 
     def set_health(self, healthy: bool, summary: str, reasons: list[str]) -> None:

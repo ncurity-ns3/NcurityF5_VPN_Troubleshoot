@@ -485,8 +485,45 @@ _CERT_STORE_MAP: list[tuple[str, str, str]] = [
 ]
 
 
+def _import_cert_silent(cer: Path, scope: str, store: str, log: LogFn) -> bool:
+    """Import via PowerShell — avoids certutil GUI popups."""
+    loc = f"Cert:\\{scope}\\{store}"
+    ps = (
+        f"$p = '{str(cer).replace(chr(39), chr(39)+chr(39))}'; "
+        f"Import-Certificate -FilePath $p -CertStoreLocation '{loc}' | Out-Null; "
+        "'OK'"
+    )
+    log(f"인증서 등록: {cer.name} → {scope}\\{store}")
+    try:
+        from app.winproc import run_silent
+
+        r = run_silent(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps,
+            ],
+            timeout=30,
+        )
+        out = _decode_console(r.stdout) + _decode_console(r.stderr)
+        if r.returncode == 0 and "OK" in out:
+            return True
+        # Already present often still returns 0; treat non-zero carefully
+        if r.returncode == 0:
+            return True
+        log(f"  등록 결과: {out.strip()[:200] or f'exit={r.returncode}'}")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        log(f"  오류: {exc}")
+        return False
+
+
 def install_root_certs(log: LogFn) -> ActionResult:
-    """Install Sectigo chain to LocalMachine and CurrentUser (Root/CA)."""
+    """Install Sectigo chain to LocalMachine and CurrentUser (Root/CA), no GUI."""
     cert_dir = resource_path("certs")
     ok = True
     found = False
@@ -503,15 +540,32 @@ def install_root_certs(log: LogFn) -> ActionResult:
             ok = False
             continue
         found = True
-        log(f"설치 중(컴퓨터): {label}")
-        r1 = _run(["certutil", "-addstore", "-f", store, str(cer)], log)
-        log(f"설치 중(현재 사용자): {label}")
-        r2 = _run(["certutil", "-user", "-addstore", "-f", store, str(cer)], log)
-        ok = ok and (r1.ok or r2.ok)
+        log(f"설치: {label}")
+        a = _import_cert_silent(cer, "LocalMachine", store, log)
+        b = _import_cert_silent(cer, "CurrentUser", store, log)
+        ok = ok and (a or b)
     if not found:
         log("설치할 인증서 파일이 없습니다.")
         return ActionResult(False, "no certs")
     return ActionResult(ok)
+
+
+def collect_support_pack(log: LogFn, *, include_f5_report: bool = True) -> ActionResult:
+    """Collect materials engineers need: info, events, reliability, optional F5 HTML."""
+    log("지원용 자료를 수집합니다…")
+    ensure_work_folder(log)
+    results = [
+        collect_client_info(log),
+        collect_event_logs(log),
+        collect_reliability(log),
+    ]
+    if include_f5_report:
+        log("F5 진단 리포트를 수집합니다. 몇 분 걸릴 수 있습니다…")
+        results.append(collect_f5_logs(log))
+    open_workdir(log)
+    ok = all(r.ok for r in results)
+    log("자료 수집이 끝났습니다. 작업 폴더를 확인해 주세요.")
+    return ActionResult(ok, "support pack")
 
 
 def open_certmgr(log: LogFn) -> ActionResult:
@@ -742,4 +796,5 @@ ACTIONS: dict[str, Callable[[LogFn], ActionResult]] = {
     "open_event_viewer": open_event_viewer,
     "open_reliability_monitor": open_reliability_monitor,
     "analyze_environment": analyze_environment,
+    "collect_support_pack": lambda log: collect_support_pack(log, include_f5_report=True),
 }

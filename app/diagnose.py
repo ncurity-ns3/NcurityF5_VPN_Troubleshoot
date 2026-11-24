@@ -267,57 +267,74 @@ def check_installer_signature(_log: LogFn | None = None) -> CheckResult:
     )
 
 
-def _store_has(name: str, store: str, user: bool = False) -> bool:
+def _cert_cn_present(cn: str, store: str, user: bool) -> bool:
+    """Detect cert by CN via PowerShell Cert: drive (matches certmgr view)."""
+    scope = "CurrentUser" if user else "LocalMachine"
+    # Escape single quotes for PowerShell
+    cn_ps = cn.replace("'", "''")
+    ps = (
+        f"$n=0; Get-ChildItem 'Cert:\\{scope}\\{store}' -ErrorAction SilentlyContinue | "
+        f"ForEach-Object {{ if ($_.Subject -like '*CN={cn_ps}*' -or $_.Subject -like '*{cn_ps}*') {{ $n++ }} }}; "
+        "Write-Output $n"
+    )
+    try:
+        r = run_silent(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps,
+            ],
+            timeout=30,
+        )
+        text = _decode(r.stdout).strip().splitlines()
+        if text and text[-1].isdigit() and int(text[-1]) > 0:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    # Fallback: certutil text search
     cmd = ["certutil", "-user", "-store", store] if user else ["certutil", "-store", store]
     try:
         r = run_silent(cmd, timeout=25)
-        return name in _decode(r.stdout)
+        return cn in _decode(r.stdout)
     except Exception:  # noqa: BLE001
         return False
 
 
 def check_cert_sectigo_chain(_log: LogFn | None = None) -> CheckResult:
-    """Check Machine + CurrentUser stores (installers often trust via CurrentUser)."""
+    """Check Machine + CurrentUser Root/CA (same places certmgr shows)."""
     root_name = "Sectigo Public Code Signing Root R46"
     ca_name = "Sectigo Public Code Signing CA EV R36"
-    root_m = _store_has(root_name, "Root", user=False)
-    root_u = _store_has(root_name, "Root", user=True)
-    ca_m = _store_has(ca_name, "CA", user=False)
-    ca_u = _store_has(ca_name, "CA", user=True)
+    root_m = _cert_cn_present(root_name, "Root", user=False)
+    root_u = _cert_cn_present(root_name, "Root", user=True)
+    ca_m = _cert_cn_present(ca_name, "CA", user=False)
+    ca_u = _cert_cn_present(ca_name, "CA", user=True)
     root_ok = root_m or root_u
     ca_ok = ca_m or ca_u
     tech = f"root_machine={root_m}, root_user={root_u}, ca_machine={ca_m}, ca_user={ca_u}"
     if root_ok and ca_ok:
-        where = []
-        if root_m or ca_m:
-            where.append("컴퓨터")
-        if root_u or ca_u:
-            where.append("현재 사용자")
         return CheckResult(
             "cert_sectigo_chain",
             "코드 서명 인증서",
             "ok",
-            f"Sectigo 코드 서명 인증서 체인이 확인되었습니다. ({', '.join(where)})",
+            "필요한 코드 서명 인증서가 설치되어 있습니다.",
             tech,
         )
     missing = []
     if not root_ok:
-        missing.append("루트(R46)")
+        missing.append("루트 인증서")
     if not ca_ok:
-        missing.append("중간(EV R36)")
-    detail = (
-        f"Sectigo 코드 서명 인증서 중 {', '.join(missing)} 가 없습니다. "
-        f"(중간만 있고 루트가 없으면 서명 신뢰가 실패할 수 있습니다.)"
-        if missing
-        else "Sectigo 코드 서명 인증서가 부족합니다."
-    )
+        missing.append("중간 인증서")
     return CheckResult(
         "cert_sectigo_chain",
         "코드 서명 인증서",
         "pc_issue",
-        detail,
+        f"필요한 코드 서명 인증서({', '.join(missing)})가 없습니다.",
         tech,
-        "아래 「인증서 설치」로 루트·중간 인증서를 모두 설치한 뒤 다시 점검해 주세요.",
+        "「인증서 설치」를 실행한 뒤 다시 점검해 주세요.",
         fix_action="install_sectigo",
     )
 
@@ -361,7 +378,7 @@ def check_leftover_install(_log: LogFn | None = None) -> CheckResult:
         "leftover_install",
         "이전 설치 흔적",
         "ok",
-        "눈에 띄는 설치 잔여 문제는 없습니다.",
+        "이전 설치와 관련된 이상 흔적은 없습니다.",
         f"Conflict.*={n}",
     )
 

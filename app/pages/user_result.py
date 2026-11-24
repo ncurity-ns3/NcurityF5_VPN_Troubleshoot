@@ -30,7 +30,7 @@ _STATUS_UI = {
 }
 
 _FIX_LABELS = {
-    "install_sectigo": "인증서 설치 (해결)",
+    "install_sectigo": "인증서 설치",
     "restart_client": "VPN 프로그램 다시 실행",
     "launch_installer": "설치 파일 실행",
 }
@@ -44,8 +44,8 @@ class UserProgressPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 40, 28, 28)
         root.setSpacing(16)
-        root.addWidget(page_header("점검 중", "잠시만 기다려 주세요. 자동으로 확인합니다."))
-        self.status = QLabel("점검을 준비하고 있습니다…")
+        root.addWidget(page_header("진행 중", "잠시만 기다려 주세요."))
+        self.status = QLabel("준비하고 있습니다…")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
@@ -65,12 +65,11 @@ class UserResultPage(QWidget):
     back_home = pyqtSignal()
     recheck = pyqtSignal()
     save_report = pyqtSignal()
-    apply_fix = pyqtSignal(str)  # fix_action id
+    apply_fix = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._symptom_id = ""
-        self._fix_actions: list[str] = []
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 16)
         root.setSpacing(12)
@@ -154,27 +153,19 @@ class UserResultPage(QWidget):
         fl.addWidget(info_row(report.recommended_fix()))
         if report.has_needs_admin:
             fl.addWidget(
-                info_row(
-                    "관리자 확인이 필요한 항목이 있습니다. 「결과 저장」 후 담당자에게 전달해 주세요."
-                )
+                info_row("담당자 확인이 필요하면 「결과 저장」으로 자료를 모아 전달해 주세요.")
             )
         self.body.addWidget(fix)
         self.body.addStretch(1)
 
-        # Unique fix actions from pc_issue/suspect results
         actions: list[str] = []
         for r in report.results:
             if r.fix_action and r.status in ("pc_issue", "suspect") and r.fix_action not in actions:
                 actions.append(r.fix_action)
-        self._fix_actions = actions
         for fa in actions:
             btn = primary_button(_FIX_LABELS.get(fa, fa))
             btn.clicked.connect(lambda _=False, a=fa: self.apply_fix.emit(a))
             self.fix_row.addWidget(btn)
-        if report.has_needs_admin and not actions:
-            hint = secondary_button("결과 저장 후 관리자 문의")
-            hint.clicked.connect(self.save_report.emit)
-            self.fix_row.addWidget(hint)
         self.fix_row.addStretch(1)
 
     @property

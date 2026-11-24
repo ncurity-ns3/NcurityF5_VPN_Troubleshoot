@@ -90,6 +90,42 @@ class _DiagnoseWorker(QObject):
         self.finished.emit(report)
 
 
+class _SupportPackWorker(QObject):
+    """Save diagnosis text + collect engineer materials, then open folder."""
+
+    log = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cancel = False
+
+    def request_cancel(self) -> None:
+        self._cancel = True
+
+    def run(self, report: object) -> None:
+        from app.actions import collect_support_pack
+        from app.diagnose import save_diagnosis_report
+        from app.paths import troubleshoot_dir
+
+        def _log(msg: str) -> None:
+            if not self._cancel:
+                self.log.emit(msg)
+
+        try:
+            if report is not None:
+                path = save_diagnosis_report(report, _log)  # type: ignore[arg-type]
+                _log(f"점검 요약 저장: {path.name}")
+            if self._cancel:
+                self.finished.emit(False, "")
+                return
+            result = collect_support_pack(_log, include_f5_report=True)
+            self.finished.emit(result.ok, str(troubleshoot_dir()))
+        except Exception as exc:  # noqa: BLE001
+            _log(f"오류: {exc}")
+            self.finished.emit(False, "")
+
+
 class _AdminMixedWorker(QObject):
     log = pyqtSignal(str)
     finished = pyqtSignal(bool)
@@ -154,6 +190,8 @@ class MainWindow(QMainWindow):
         self._worker: ActionWorker | None = None
         self._diag_thread: QThread | None = None
         self._diag_worker: _DiagnoseWorker | None = None
+        self._pack_thread: QThread | None = None
+        self._pack_worker: _SupportPackWorker | None = None
         self._admin_thread: QThread | None = None
         self._admin_worker: _AdminMixedWorker | None = None
         self._health_thread: QThread | None = None
@@ -213,7 +251,7 @@ class MainWindow(QMainWindow):
         self.tools.run_steps.connect(self._run_from_tools)
         self.admin_diag.run_selected.connect(self._run_admin_selected)
         self.user_info.saved.connect(self._on_user_info_saved)
-        self.user_progress.cancel.connect(self._cancel_diagnosis)
+        self.user_progress.cancel.connect(self._cancel_user_progress)
         self.user_result.back_home.connect(self._back_to_issue_hub)
         self.user_result.recheck.connect(self._recheck_last)
         self.user_result.save_report.connect(self._save_last_report)
@@ -355,11 +393,59 @@ class MainWindow(QMainWindow):
     def _save_last_report(self) -> None:
         if not self._last_report:
             return
-        from app.diagnose import save_diagnosis_report
+        if self._pack_thread and self._pack_thread.isRunning():
+            return
+        reply = QMessageBox.question(
+            self,
+            "결과 저장",
+            "점검 요약과 함께 환경 정보·이벤트 로그·F5 진단 리포트를 수집합니다.\n"
+            "F5 리포트는 몇 분 걸릴 수 있습니다. 계속할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-        path = save_diagnosis_report(self._last_report)
-        QMessageBox.information(self, "저장 완료", f"진단 결과를 저장했습니다.\n\n{path}")
-        self.statusBar().showMessage(f"저장: {path}")
+        self.stack.setCurrentIndex(self._stack_index("symptom_progress"))
+        self.user_progress.set_status("지원 자료를 수집하고 있습니다…")
+        self._pack_thread = QThread(self)
+        self._pack_worker = _SupportPackWorker()
+        self._pack_worker.moveToThread(self._pack_thread)
+        self._pack_thread.started.connect(partial(self._pack_worker.run, self._last_report))
+        self._pack_worker.log.connect(self.user_progress.set_status)
+        self._pack_worker.finished.connect(self._on_support_pack_done)
+        self._pack_worker.finished.connect(self._pack_thread.quit)
+        self._pack_thread.finished.connect(self._cleanup_pack_thread)
+        self._pack_thread.start()
+
+    def _cancel_user_progress(self) -> None:
+        if self._pack_worker:
+            self._pack_worker.request_cancel()
+        if self._diag_worker:
+            self._diag_worker.request_cancel()
+
+    def _on_support_pack_done(self, ok: bool, folder: str) -> None:
+        self.stack.setCurrentIndex(self._stack_index("symptom_result"))
+        if folder:
+            QMessageBox.information(
+                self,
+                "저장 완료",
+                "자료를 저장했습니다. 작업 폴더를 열었습니다.\n\n"
+                f"{folder}\n\n"
+                "이 폴더를 담당자에게 전달해 주세요."
+                + ("" if ok else "\n\n일부 항목 수집에 실패했을 수 있습니다."),
+            )
+            self.statusBar().showMessage(f"저장 폴더: {folder}")
+        else:
+            QMessageBox.warning(self, "저장", "자료 수집이 완료되지 않았습니다.")
+
+    def _cleanup_pack_thread(self) -> None:
+        if self._pack_worker:
+            self._pack_worker.deleteLater()
+            self._pack_worker = None
+        if self._pack_thread:
+            self._pack_thread.deleteLater()
+            self._pack_thread = None
 
     def _apply_user_fix(self, action_id: str) -> None:
         from app import actions

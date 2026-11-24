@@ -6,6 +6,19 @@ F5 SSL VPN Troubleshoot Tool (Ncurity) 버전별 변경 사항입니다.
 
 ---
 
+## [1.4.2] — 2026-11-24
+
+### Fixed
+- 사용자에게 불필요한 안내 문구 제거 (조용히 실행, 잔여물 가능 등)
+- Sectigo 인증서 검사: certmgr와 동일하게 PowerShell `Cert:` 저장소로 확인
+- 인증서 설치 시 certutil 팝업 대신 조용한 Import-Certificate 사용
+
+### Changed
+- 「결과 저장 후 관리자 문의」 버튼 제거
+- 「결과 저장」 시 점검 요약 + 환경 정보 + 이벤트 로그 + F5 리포트 수집 후 작업 폴더 자동 열기
+
+---
+
 ## [1.4.1] — 2026-11-19
 
 ### Fixed

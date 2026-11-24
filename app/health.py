@@ -228,7 +228,7 @@ def check_edge_client_health() -> HealthCheck:
     try:
         conflicts = list(DOWNLOADED.glob("Conflict.*"))
         if len(conflicts) >= 5:
-            soft.append(f"Downloaded Program Files에 Conflict 폴더 {len(conflicts)}개 (잔여물 가능)")
+            soft.append("이전에 설치가 정상적으로 끝나지 않은 흔적이 있습니다.")
             details.append(f"Conflict.* 폴더: {len(conflicts)}개")
     except OSError:
         pass
