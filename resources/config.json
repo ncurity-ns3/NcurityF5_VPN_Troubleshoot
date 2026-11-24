@@ -1,0 +1,9 @@
+{
+  "vpn_fqdn": "",
+  "tunnel_mode": "unknown",
+  "internet_allowed_on_vpn": null,
+  "internal_test_hosts": [],
+  "approved_client_version_prefix": "72",
+  "expected_signer": "F5, Inc.",
+  "_comment": "고객사 VPN FQDN·내부 테스트 호스트를 넣으면 ③④⑥⑦ 진단이 정확해집니다."
+}
