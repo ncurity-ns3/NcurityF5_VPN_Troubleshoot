@@ -1,13 +1,22 @@
-"""Silent Windows process helpers — no console flash."""
+"""Silent Windows process helpers — no console / PowerShell flash."""
 
 from __future__ import annotations
 
 import subprocess
 from typing import Sequence
 
+# Prevent console window creation for child processes
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_STARTF_USESHOWWINDOW = getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
 
-def _flags() -> int:
-    return subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+def _startupinfo() -> subprocess.STARTUPINFO | None:
+    if not hasattr(subprocess, "STARTUPINFO"):
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= _STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return si
 
 
 def run_silent(
@@ -21,7 +30,8 @@ def run_silent(
         capture_output=True,
         timeout=timeout,
         cwd=cwd,
-        creationflags=_flags(),
+        creationflags=_CREATE_NO_WINDOW,
+        startupinfo=_startupinfo(),
     )
 
 
@@ -31,5 +41,25 @@ def popen_silent(cmd: Sequence[str], *, cwd: str | None = None) -> subprocess.Po
         cwd=cwd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=_flags(),
+        creationflags=_CREATE_NO_WINDOW,
+        startupinfo=_startupinfo(),
+    )
+
+
+def run_powershell_silent(script: str, *, timeout: int | None = 60) -> subprocess.CompletedProcess[bytes]:
+    """Run PowerShell without a visible window (last resort — prefer non-PS tools)."""
+    return run_silent(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NoLogo",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+        timeout=timeout,
     )

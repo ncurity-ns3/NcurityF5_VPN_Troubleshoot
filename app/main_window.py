@@ -238,8 +238,10 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(w)
 
         self.home.open_user_info.connect(lambda: self._goto("user_info"))
-        self.home.open_issues.connect(lambda: self._goto("issues"))
-        self.home.open_tools.connect(lambda: self._goto("tools"))
+        self.home.open_issues.connect(self._goto_issues_gated)
+        self.home.open_tools.connect(self._goto_tools_gated)
+        self.home.open_temp_actions.connect(self._goto_tools_gated)
+        self.home.open_reinstall.connect(self._goto_tools_gated)
         self.home.open_guide.connect(lambda: self._goto("guide"))
         self.home.refresh_health.connect(self._start_health_check)
         self.home.run_analyze.connect(self._run_analyze_from_home)
@@ -263,7 +265,8 @@ class MainWindow(QMainWindow):
 
         self.nav_list.setCurrentRow(0)
         self._refresh_user_info_status()
-        self.home.set_health_idle()
+        self.home.set_health_pending()
+        QTimer.singleShot(200, self._start_health_check)
 
     def _build_nav(self) -> QWidget:
         frame = QFrame()
@@ -309,8 +312,11 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(NAV_ITEMS):
             return
         key = NAV_ITEMS[row][1]
-        if key == "issues":
-            self.stack.setCurrentIndex(self._stack_index("issues"))
+        if key in ("issues", "tools") and not self._ensure_user_info():
+            self.nav_list.blockSignals(True)
+            self.nav_list.setCurrentRow(next(i for i, (_, k) in enumerate(NAV_ITEMS) if k == "user_info"))
+            self.nav_list.blockSignals(False)
+            self.stack.setCurrentIndex(self._stack_index("user_info"))
             return
         self.stack.setCurrentIndex(self._stack_index(key))
 
@@ -321,7 +327,29 @@ class MainWindow(QMainWindow):
         else:
             self.nav_list.setCurrentRow(nav_idx)
 
+    def _ensure_user_info(self) -> bool:
+        if get_user_info().is_complete():
+            return True
+        QMessageBox.information(
+            self,
+            "사용자 정보 필요",
+            "조치를 진행하려면 먼저 [사용자 정보]에서\n"
+            "계정·이슈 발생 시간·VPN 접속 도메인을 입력해 주세요.",
+        )
+        self._goto("user_info")
+        return False
+
+    def _goto_issues_gated(self) -> None:
+        if self._ensure_user_info():
+            self._goto("issues")
+
+    def _goto_tools_gated(self) -> None:
+        if self._ensure_user_info():
+            self._goto("tools")
+
     def _back_to_issue_hub(self) -> None:
+        if not self._ensure_user_info():
+            return
         self.stack.setCurrentIndex(self._stack_index("issues"))
         self.nav_list.blockSignals(True)
         self.nav_list.setCurrentRow(next(i for i, (_, k) in enumerate(NAV_ITEMS) if k == "issues"))
@@ -346,6 +374,8 @@ class MainWindow(QMainWindow):
 
     # ----- symptom diagnosis (이슈별 조치) -----
     def _start_user_diagnosis(self, symptom_id: str) -> None:
+        if not self._ensure_user_info():
+            return
         if self._diag_thread and self._diag_thread.isRunning():
             return
         self._last_symptom_id = symptom_id
@@ -448,6 +478,8 @@ class MainWindow(QMainWindow):
             self._pack_thread = None
 
     def _apply_user_fix(self, action_id: str) -> None:
+        if not self._ensure_user_info():
+            return
         from app import actions
         from app.diagnose import safe_restart_edge_client
 
@@ -551,6 +583,8 @@ class MainWindow(QMainWindow):
 
     # ----- workers -----
     def _run_analyze_from_home(self) -> None:
+        if not self._ensure_user_info():
+            return
         self._goto("tools")
         self._active_log_target = "tools"
         self._start_worker(
@@ -588,10 +622,14 @@ class MainWindow(QMainWindow):
             self._admin_thread = None
 
     def _run_from_issue(self, steps: list) -> None:
+        if not self._ensure_user_info():
+            return
         self._active_log_target = "issue"
         self._start_worker(steps)
 
     def _run_from_tools(self, steps: list) -> None:
+        if not self._ensure_user_info():
+            return
         self._active_log_target = "tools"
         self._start_worker(steps)
 

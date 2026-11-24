@@ -88,18 +88,18 @@ def _run(
     timeout: int | None = None,
     cwd: str | Path | None = None,
 ) -> ActionResult:
+    from app.winproc import run_silent
+
     display = cmd if isinstance(cmd, str) else " ".join(cmd)
     log(f"실행: {display}")
     try:
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        proc = subprocess.run(
-            cmd,
-            shell=shell,
-            capture_output=True,
-            timeout=timeout,
-            cwd=str(cwd) if cwd else None,
-            creationflags=0 if shell else flags,
-        )
+        if shell:
+            # Avoid flashing cmd — wrap as argv with CREATE_NO_WINDOW
+            argv = ["cmd.exe", "/c", cmd] if isinstance(cmd, str) else ["cmd.exe", "/c", *cmd]
+            proc = run_silent(argv, timeout=timeout, cwd=str(cwd) if cwd else None)
+        else:
+            argv = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+            proc = run_silent(argv, timeout=timeout, cwd=str(cwd) if cwd else None)
         out = _decode_console(proc.stdout).strip()
         err = _decode_console(proc.stderr).strip()
         if out:
@@ -127,6 +127,7 @@ def ensure_work_folder(log: LogFn) -> ActionResult:
 
 def collect_client_info(log: LogFn, os_note: str = "") -> ActionResult:
     from app.user_info import get_user_info
+    from app.winproc import run_silent
 
     base = troubleshoot_dir()
     user = os.environ.get("USERNAME", "user")
@@ -134,7 +135,7 @@ def collect_client_info(log: LogFn, os_note: str = "") -> ActionResult:
     log("환경 정보를 수집하고 있습니다…")
 
     parts: list[str] = []
-    ver = subprocess.run("ver", shell=True, capture_output=True)
+    ver = run_silent(["cmd.exe", "/c", "ver"], timeout=10)
     parts.append(_decode_console(ver.stdout).strip())
     parts.append(f"Date/Time : {time.strftime('%Y-%m-%d %H:%M:%S')}")
     parts.append("-" * 40)
@@ -159,7 +160,7 @@ def collect_client_info(log: LogFn, os_note: str = "") -> ActionResult:
         ("route print", ["route", "print"]),
     ]:
         log(f"수집 중: {label}")
-        r = subprocess.run(cmd, capture_output=True)
+        r = run_silent(cmd, timeout=60)
         parts.append(f"===== {label} =====")
         parts.append(_decode_console(r.stdout))
         parts.append("")
@@ -173,12 +174,9 @@ def _kill_f5wininfo() -> None:
     if sys.platform != "win32":
         return
     try:
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "f5wininfo.exe"],
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
+        from app.winproc import run_silent
+
+        run_silent(["taskkill", "/F", "/IM", "f5wininfo.exe"], timeout=15)
     except Exception:
         pass
 
@@ -229,12 +227,9 @@ def _terminate_proc(proc: subprocess.Popen[bytes] | None) -> None:
     if proc is None or proc.poll() is not None:
         return
     try:
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
+        from app.winproc import run_silent
+
+        run_silent(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout=15)
     except Exception:
         pass
     try:
@@ -383,13 +378,25 @@ def open_f5wininfo(log: LogFn) -> ActionResult:
 
 
 def list_miniports(log: LogFn) -> ActionResult:
-    ids = ",".join(f"'{x}'" for x in MINIPORT_IDS)
-    ps = (
-        "Get-PnpDevice -Class Net | "
-        f"Where-Object {{ $_.InstanceId -in @({ids}) }} | "
-        "Select-Object Status,FriendlyName,InstanceId | Format-Table -AutoSize | Out-String"
-    )
-    return _run(["powershell", "-NoProfile", "-Command", ps], log)
+    """List WAN Miniport devices via pnputil (no PowerShell window)."""
+    from app.winproc import run_silent
+
+    log("WAN Miniport 상태를 확인합니다…")
+    try:
+        r = run_silent(["pnputil", "/enum-devices", "/class", "Net"], timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  오류: {exc}")
+        return ActionResult(False, str(exc))
+    text = _decode_console(r.stdout)
+    hits: list[str] = []
+    lower = text.lower()
+    for mid in MINIPORT_IDS:
+        if mid.lower() in lower:
+            hits.append(mid)
+            log(f"  발견: {mid}")
+    if not hits:
+        log("  대상 Miniport가 없거나 이미 제거된 상태일 수 있습니다.")
+    return ActionResult(True, "\n".join(hits))
 
 
 def remove_miniports(log: LogFn) -> ActionResult:
@@ -427,8 +434,10 @@ def restart_vpn_services(log: LogFn) -> ActionResult:
 
 
 def _wait_service(name: str, goal: str, log: LogFn, retries: int = 30) -> None:
+    from app.winproc import run_silent
+
     for _ in range(retries):
-        r = subprocess.run(["sc", "query", name], capture_output=True)
+        r = run_silent(["sc", "query", name], timeout=10)
         if goal in _decode_console(r.stdout):
             log(f"  {name}: {goal}")
             return
@@ -442,12 +451,12 @@ def run_sfc(log: LogFn) -> ActionResult:
     log_path = troubleshoot_dir() / "f5win_troubleshoot_result.txt"
     cbs = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Logs" / "CBS" / "CBS.log"
     if cbs.exists():
-        ps = (
-            f"Select-String -Path '{cbs}' -Pattern '\\[SR\\]' -Encoding UTF8 | "
-            "Select-Object -Last 100 | ForEach-Object {{ $_.Line }} | "
-            f"Out-File -FilePath '{log_path}' -Append -Encoding utf8"
+        # findstr — no PowerShell
+        _run(
+            ["cmd.exe", "/c", f'findstr /C:"[SR]" "{cbs}" >> "{log_path}"'],
+            log,
+            timeout=120,
         )
-        _run(["powershell", "-NoProfile", "-Command", ps], log)
     return r
 
 
@@ -486,33 +495,18 @@ _CERT_STORE_MAP: list[tuple[str, str, str]] = [
 
 
 def _import_cert_silent(cer: Path, scope: str, store: str, log: LogFn) -> bool:
-    """Import via PowerShell — avoids certutil GUI popups."""
+    """Import via hidden PowerShell Import-Certificate (no certutil GUI)."""
+    from app.winproc import run_powershell_silent
+
     loc = f"Cert:\\{scope}\\{store}"
+    path_ps = str(cer).replace("'", "''")
     ps = (
-        f"$p = '{str(cer).replace(chr(39), chr(39)+chr(39))}'; "
-        f"Import-Certificate -FilePath $p -CertStoreLocation '{loc}' | Out-Null; "
-        "'OK'"
+        f"Import-Certificate -FilePath '{path_ps}' -CertStoreLocation '{loc}' | Out-Null; 'OK'"
     )
     log(f"인증서 등록: {cer.name} → {scope}\\{store}")
     try:
-        from app.winproc import run_silent
-
-        r = run_silent(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                ps,
-            ],
-            timeout=30,
-        )
+        r = run_powershell_silent(ps, timeout=30)
         out = _decode_console(r.stdout) + _decode_console(r.stderr)
-        if r.returncode == 0 and "OK" in out:
-            return True
-        # Already present often still returns 0; treat non-zero carefully
         if r.returncode == 0:
             return True
         log(f"  등록 결과: {out.strip()[:200] or f'exit={r.returncode}'}")
@@ -523,7 +517,7 @@ def _import_cert_silent(cer: Path, scope: str, store: str, log: LogFn) -> bool:
 
 
 def install_root_certs(log: LogFn) -> ActionResult:
-    """Install Sectigo chain to LocalMachine and CurrentUser (Root/CA), no GUI."""
+    """Install Sectigo chain to LocalMachine and CurrentUser (Root/CA)."""
     cert_dir = resource_path("certs")
     ok = True
     found = False
@@ -660,33 +654,29 @@ def collect_event_logs(log: LogFn) -> ActionResult:
 
 
 def collect_reliability(log: LogFn) -> ActionResult:
+    from app.winproc import run_silent
+
     base = troubleshoot_dir()
     out = base / "reliability.txt"
     log("안정성 기록을 수집하고 있습니다…")
-    ps = (
-        "Get-WinEvent -LogName 'Microsoft-Windows-ReliabilityAnalysis/Operational' "
-        "-MaxEvents 50 -ErrorAction SilentlyContinue | "
-        "Format-List TimeCreated, Id, LevelDisplayName, Message | Out-String -Width 200"
-    )
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", ps],
-        capture_output=True,
-        timeout=60,
-    )
-    text = _decode_console(r.stdout).strip()
-    if not text:
-        # Fallback: Reliability Monitor summary via Win32_ReliabilityRecords if available
-        ps2 = (
-            "Get-CimInstance -ClassName Win32_ReliabilityRecords -ErrorAction SilentlyContinue | "
-            "Select-Object -First 50 TimeGenerated, EventIdentifier, SourceName, Message | "
-            "Format-List | Out-String -Width 200"
-        )
-        r2 = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps2],
-            capture_output=True,
+    text = ""
+    try:
+        r = run_silent(
+            [
+                "wevtutil",
+                "qe",
+                "Microsoft-Windows-ReliabilityAnalysis/Operational",
+                "/c:50",
+                "/f:text",
+                "/rd:true",
+            ],
             timeout=60,
         )
-        text = _decode_console(r2.stdout).strip() or "(안정성 기록을 가져오지 못했습니다.)"
+        text = _decode_console(r.stdout).strip()
+    except Exception:  # noqa: BLE001
+        text = ""
+    if not text:
+        text = "(안정성 기록을 가져오지 못했습니다. 이벤트 뷰어에서 확인하세요.)"
     out.write_text(text, encoding="utf-8-sig")
     log(f"저장 완료: {out}")
     return ActionResult(True, str(out))

@@ -212,14 +212,18 @@ def check_installer_signature(_log: LogFn | None = None) -> CheckResult:
         )
     path = cands[0]
     cfg = load_config()
+    # Prefer signtool-free check via PowerShell, always hidden (no console flash).
+    from app.winproc import run_powershell_silent
+
     ps = (
         f"$s = Get-AuthenticodeSignature -FilePath '{path}'; "
         "Write-Output ($s.Status.ToString() + '|' + [string]$s.SignerCertificate.Subject + '|' + [string]$s.StatusMessage)"
     )
-    code, out = _run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps],
-        timeout=25,
-    )
+    try:
+        r = run_powershell_silent(ps, timeout=25)
+        code, out = r.returncode, _decode(r.stdout) + _decode(r.stderr)
+    except Exception as exc:  # noqa: BLE001
+        code, out = -1, str(exc)
     line = out.strip().splitlines()[-1] if out.strip() else ""
     parts = line.split("|")
     status_part = parts[0] if parts else ""
@@ -268,34 +272,7 @@ def check_installer_signature(_log: LogFn | None = None) -> CheckResult:
 
 
 def _cert_cn_present(cn: str, store: str, user: bool) -> bool:
-    """Detect cert by CN via PowerShell Cert: drive (matches certmgr view)."""
-    scope = "CurrentUser" if user else "LocalMachine"
-    # Escape single quotes for PowerShell
-    cn_ps = cn.replace("'", "''")
-    ps = (
-        f"$n=0; Get-ChildItem 'Cert:\\{scope}\\{store}' -ErrorAction SilentlyContinue | "
-        f"ForEach-Object {{ if ($_.Subject -like '*CN={cn_ps}*' -or $_.Subject -like '*{cn_ps}*') {{ $n++ }} }}; "
-        "Write-Output $n"
-    )
-    try:
-        r = run_silent(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                ps,
-            ],
-            timeout=30,
-        )
-        text = _decode(r.stdout).strip().splitlines()
-        if text and text[-1].isdigit() and int(text[-1]) > 0:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    # Fallback: certutil text search
+    """Detect cert by CN via certutil only (no PowerShell window)."""
     cmd = ["certutil", "-user", "-store", store] if user else ["certutil", "-store", store]
     try:
         r = run_silent(cmd, timeout=25)

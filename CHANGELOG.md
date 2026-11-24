@@ -6,6 +6,18 @@ F5 SSL VPN Troubleshoot Tool (Ncurity) 버전별 변경 사항입니다.
 
 ---
 
+## [1.4.3] — 2026-11-24
+
+### Fixed
+- 실행 시 PowerShell/콘솔 창이 여러 번 깜빡이던 문제 (CREATE_NO_WINDOW + SW_HIDE, Miniport/안정성/인증서 경로에서 불필요 PS 제거)
+- 사용자 정보 미입력 시 이슈별 조치·개별 도구·환경 분석·임시 조치 차단 복구
+
+### Added
+- 홈에서 설치 상태 자동 Healthy/Unhealthy 확인
+- 홈에 단말기 환경 분석 · 임시 조치 · 삭제/재설치 바로가기 복구
+
+---
+
 ## [1.4.2] — 2026-11-24
 
 ### Fixed
